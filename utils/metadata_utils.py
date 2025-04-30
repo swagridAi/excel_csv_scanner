@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
+import json
 
 from config import ENCODING_SAMPLE_SIZE
 from utils.error_utils import safe_operation
@@ -71,6 +72,13 @@ def get_excel_file_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
         metadata["excel_format"] = "unknown"
         metadata["excel_format_description"] = f"Unknown Excel Format ({extension})"
     
+    # Format dates for consistent display
+    for date_field in ['created_date', 'modified_date', 'accessed_date']:
+        if date_field in metadata and metadata[date_field]:
+            if isinstance(metadata[date_field], datetime):
+                metadata[f"{date_field}_iso"] = metadata[date_field].isoformat()
+                metadata[f"{date_field}_formatted"] = metadata[date_field].strftime("%Y-%m-%d %H:%M:%S")
+    
     return metadata
 
 
@@ -96,6 +104,13 @@ def get_csv_file_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
     
     metadata["encoding"] = encoding
     metadata["delimiter"] = delimiter
+    
+    # Format dates for consistent display
+    for date_field in ['created_date', 'modified_date', 'accessed_date']:
+        if date_field in metadata and metadata[date_field]:
+            if isinstance(metadata[date_field], datetime):
+                metadata[f"{date_field}_iso"] = metadata[date_field].isoformat()
+                metadata[f"{date_field}_formatted"] = metadata[date_field].strftime("%Y-%m-%d %H:%M:%S")
     
     # Try to detect if file has headers
     try:
@@ -252,6 +267,16 @@ def get_extended_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
     if not metadata.get("is_binary", False):
         metadata["encoding"] = detect_file_encoding_with_bom(path)
     
+    # Format date values for better readability
+    for date_field in ['created_date', 'modified_date', 'accessed_date']:
+        if date_field in metadata and metadata[date_field]:
+            if isinstance(metadata[date_field], datetime):
+                metadata[f"{date_field}_iso"] = metadata[date_field].isoformat()
+                metadata[f"{date_field}_formatted"] = metadata[date_field].strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Prepare structure for user information (will be populated by specific parsers)
+    metadata["user_info"] = {}
+    
     # Add file type specific metadata
     if extension in ['.xlsx', '.xlsm', '.xls', '.xlsb']:
         excel_metadata = get_excel_file_metadata(path)
@@ -259,6 +284,10 @@ def get_extended_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
     elif extension == '.csv':
         csv_metadata = get_csv_file_metadata(path)
         metadata.update(csv_metadata)
+    
+    # If user_info is empty, remove it
+    if not metadata["user_info"]:
+        del metadata["user_info"]
     
     return metadata
 
@@ -289,3 +318,55 @@ def get_metadata_batch(file_paths: List[Union[str, Path]]) -> List[Dict[str, Any
             })
     
     return results
+
+
+def extract_owner_info_from_path(file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to extract ownership information from file path and system attributes.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        Dictionary with ownership information or None if not available
+    """
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    
+    try:
+        owner_info = {}
+        
+        # Try to get file owner on Unix-like systems
+        try:
+            import pwd
+            import grp
+            stat_info = path.stat()
+            owner_info["owner_user"] = pwd.getpwuid(stat_info.st_uid).pw_name
+            owner_info["owner_group"] = grp.getgrgid(stat_info.st_gid).gr_name
+        except (ImportError, AttributeError, KeyError):
+            # Not on Unix or user/group not found
+            pass
+        
+        # Try to get file owner on Windows
+        try:
+            import win32security
+            import win32con
+            
+            security_descriptor = win32security.GetFileSecurity(
+                str(path),
+                win32security.OWNER_SECURITY_INFORMATION
+            )
+            
+            owner_sid = security_descriptor.GetSecurityDescriptorOwner()
+            name, domain, _ = win32security.LookupAccountSid(None, owner_sid)
+            
+            owner_info["owner_user"] = name
+            owner_info["owner_domain"] = domain
+        except (ImportError, Exception):
+            # Not on Windows or failed to get owner
+            pass
+        
+        return owner_info if owner_info else None
+        
+    except Exception as e:
+        logger.debug(f"Error extracting ownership info: {str(e)}")
+        return None

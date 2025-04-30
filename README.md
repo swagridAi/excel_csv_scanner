@@ -5,8 +5,10 @@ A powerful Python tool that scans folders for Excel and CSV files, extracts deta
 ## Features
 
 - **File Discovery**: Recursively scan directories for Excel and CSV files with filtering options
-- **Metadata Extraction**: 
+- **Comprehensive Metadata Extraction**: 
   - Basic file properties (size, modified date, etc.)
+  - Enhanced timestamp information (created, modified, accessed dates)
+  - User metadata (creator, last modified by, company)
   - Excel-specific information (sheet count, row/column counts, etc.)
   - CSV structure analysis (delimiter detection, encoding, etc.)
 - **Special Feature Detection**:
@@ -14,10 +16,18 @@ A powerful Python tool that scans folders for Excel and CSV files, extracts deta
   - PivotTable identification
   - Custom XML content detection
   - Sheet visibility analysis
+- **User Information Tracking**:
+  - Identify file creators and editors
+  - Extract company and contact information
+  - Track file ownership and sharing information
+  - Access history and usage patterns (when available)
 - **Multiple Output Formats**:
-  - Excel reports with formatting and multiple sheets
+  - Excel reports with formatting and multiple sheets including:
+    - Main data sheet with all file information
+    - User Information sheet showing who created/modified files
+    - Timeline sheet showing chronological file activity
   - CSV output for compatibility
-  - HTML reports for web viewing
+  - Interactive HTML reports with tabbed interface
   - JSON export for programmatic use
 - **Performance Optimizations**:
   - Memory-efficient processing for large files
@@ -114,6 +124,8 @@ excel-csv-inspector -i /path/to/folder -o report.json
 | `--max-size` | Maximum file size in bytes to include |
 | `--include` | Regex pattern for filenames to include |
 | `--exclude` | Regex pattern for filenames to exclude |
+| `--no-user-info` | Disable extraction of user metadata |
+| `--no-timestamps` | Disable extraction of timestamp metadata |
 
 ## Report Contents
 
@@ -124,9 +136,18 @@ The generated report includes the following information for each file:
 - File path
 - Extension
 - Size (bytes, KB, MB)
-- Modified date
-- Created date
-- Accessed date
+
+### Timestamp Information
+- Created date and time
+- Modified date and time
+- Accessed date and time
+
+### User Information
+- Creator/Author
+- Last modified by
+- Company/Organization
+- Owner (file system owner)
+- Additional contacts
 
 ### Excel File Information
 - Sheet count and names
@@ -147,6 +168,33 @@ The generated report includes the following information for each file:
 - PivotTable detection
 - Embedded objects
 
+## Excel Report Sheets
+
+### Main Sheet
+Contains all file data with enhanced formatting for user and timestamp fields
+
+### User Information Sheet
+Displays user metadata with the following information:
+- File details (name, path, type)
+- Creator information
+- Last modified by information
+- Company and department details
+
+### Timeline Sheet
+Provides a chronological view of file activity:
+- Creation events
+- Modification events
+- Access events
+- User details associated with each event
+
+## Interactive HTML Reports
+
+The HTML reports feature a tabbed interface with:
+
+1. **File Analysis** tab - Complete file data in a sortable table
+2. **User Information** tab - User cards showing who created or modified files
+3. **Timeline** tab - Chronological visualization of file activity
+
 ## Project Structure
 
 ```
@@ -154,18 +202,18 @@ excel_csv_inspector/
 ├── main.py                      # Entry point for running the tool
 ├── config.py                    # Configuration settings
 ├── utils/
-│   ├── file_utils.py            # File operations and finding
+│   ├── file_utils.py            # File operations and metadata extraction
 │   ├── metadata_utils.py        # Metadata extraction utilities
 │   └── error_utils.py           # Error handling utilities
 ├── parsers/
 │   ├── base_parser.py           # Base parser class with shared functionality
-│   ├── csv_parser.py            # CSV file parser
-│   ├── excel_parser.py          # Excel file parser
+│   ├── csv_parser.py            # CSV file parser with user metadata detection
+│   ├── excel_parser.py          # Excel file parser with enhanced metadata
 │   ├── vba_pivot_checker.py     # VBA and PivotTable detection
 │   └── parser_registry.py       # Parser registry and file analysis
 ├── report/
-│   ├── reporter.py              # Report generation
-│   └── templates.py             # Report templates
+│   ├── reporter.py              # Report generation with multiple output formats
+│   └── templates.py             # Report templates for different formats
 ├── tests/                       # Unit tests
 ├── requirements.txt
 └── README.md
@@ -195,7 +243,37 @@ for file_path in files:
 for result in results:
     if result.get("has_vba", False):
         print(f"VBA found in {result['filename']}")
+    
+    # Access user metadata
+    if "user_info" in result:
+        creator = result["user_info"].get("creator", "Unknown")
+        print(f"File created by {creator}")
+    
+    # Access timestamp information
+    created = result.get("created_date_formatted", "Unknown")
+    modified = result.get("modified_date_formatted", "Unknown")
+    print(f"Created: {created}, Last Modified: {modified}")
 ```
+
+## Extracting User Metadata
+
+The tool extracts user information from various sources:
+
+### Excel Files
+- Document properties (creator, lastModifiedBy)
+- Custom document properties
+- Core XML content (Office Open XML)
+- VBA project properties
+
+### CSV Files
+- Header comments with user information
+- Metadata rows at the beginning of files
+- Standard patterns indicating creators or editors
+
+### File System
+- File ownership information
+- Access control lists (Windows)
+- File system attributes and permissions
 
 ## Error Handling
 
@@ -210,6 +288,14 @@ Excel and CSV Inspector is designed to be resilient when processing large number
 - For large Excel files, the tool uses read-only mode to reduce memory usage
 - Memory-mapped operations are used when possible for large file handling
 - File types are detected efficiently without loading entire files
+- Users with large collections can use filtering options to process files in batches
+
+## Known Limitations
+
+- CSV user metadata extraction depends on standardized formats
+- Some timestamp information may not be available on all platforms
+- File access history requires specific operating system support
+- Some advanced features require additional dependencies
 
 ## Contributing
 

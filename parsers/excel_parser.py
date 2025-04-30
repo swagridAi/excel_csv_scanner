@@ -129,6 +129,33 @@ class ExcelParser(BaseParser):
             result["has_embedded_objects"] = any("Embed" in name for name in ole_names)
         except Exception:
             result["has_embedded_objects"] = False
+            
+        # Try to extract user information from XLS document info
+        try:
+            user_info = {}
+            if hasattr(workbook, 'user_name'):
+                user_info["last_user"] = workbook.user_name
+                
+            # Try to get document summary information
+            try:
+                summary_info = workbook.summary
+                if hasattr(summary_info, 'author'):
+                    user_info["creator"] = summary_info.author
+                if hasattr(summary_info, 'last_author'):
+                    user_info["last_modified_by"] = summary_info.last_author
+                if hasattr(summary_info, 'last_saved_by'):
+                    user_info["last_saved_by"] = summary_info.last_saved_by
+                if hasattr(summary_info, 'company'):
+                    user_info["company"] = summary_info.company
+                if hasattr(summary_info, 'manager'):
+                    user_info["manager"] = summary_info.manager
+            except Exception as e:
+                self.logger.debug(f"Error extracting XLS summary info: {str(e)}")
+                
+            if user_info:
+                result["user_info"] = user_info
+        except Exception as e:
+            self.logger.debug(f"Error extracting XLS user info: {str(e)}")
         
         return result
     
@@ -199,24 +226,44 @@ class ExcelParser(BaseParser):
             "avg_row_count": total_rows // sheet_count if sheet_count else 0,
         })
         
-        # Try to extract workbook properties
+        # Try to extract workbook properties including user information
         try:
             if hasattr(workbook, 'properties'):
                 props = workbook.properties
                 if props:
                     properties = {}
+                    user_info = {}
+                    
+                    # Extract all properties
                     for attr in ['creator', 'lastModifiedBy', 'created', 'modified', 'title', 'subject', 'keywords', 'category']:
                         if hasattr(props, attr):
                             value = getattr(props, attr)
                             if value is not None:
                                 properties[attr] = str(value)
                     
+                    # Separate user-related properties
+                    if 'creator' in properties:
+                        user_info['creator'] = properties['creator']
+                    if 'lastModifiedBy' in properties:
+                        user_info['last_modified_by'] = properties['lastModifiedBy']
+                    
+                    # Add additional user properties if available
+                    if hasattr(props, 'company'):
+                        user_info['company'] = str(props.company)
+                    if hasattr(props, 'manager'):
+                        user_info['manager'] = str(props.manager)
+                    
+                    # Add properties to result
                     if properties:
                         result["properties"] = properties
+                    
+                    # Add user info to result
+                    if user_info:
+                        result["user_info"] = user_info
         except Exception as e:
             self.logger.debug(f"Error extracting workbook properties: {str(e)}")
         
-        # Check for custom XML parts
+        # Try to extract additional user metadata from content types and custom properties
         try:
             with zipfile.ZipFile(file_path, 'r') as z:
                 # Look for custom XML
@@ -226,8 +273,82 @@ class ExcelParser(BaseParser):
                 # Check for embedded objects (OLE objects)
                 has_embedded = any('embeddings/' in name for name in z.namelist())
                 result["has_embedded_objects"] = has_embedded
+                
+                # Extract app.xml which may contain additional user information
+                if 'docProps/app.xml' in z.namelist():
+                    try:
+                        from xml.etree import ElementTree as ET
+                        app_xml = z.read('docProps/app.xml').decode('utf-8')
+                        root = ET.fromstring(app_xml)
+                        
+                        # Extract namespace
+                        ns = ''
+                        if root.tag.startswith('{'):
+                            ns = root.tag.split('}')[0] + '}'
+                        
+                        app_props = {}
+                        user_info = result.get("user_info", {})
+                        
+                        # Extract company
+                        company_elem = root.find(f'{ns}Company')
+                        if company_elem is not None and company_elem.text:
+                            app_props["company"] = company_elem.text
+                            user_info["company"] = company_elem.text
+                        
+                        # Extract manager
+                        manager_elem = root.find(f'{ns}Manager')
+                        if manager_elem is not None and manager_elem.text:
+                            app_props["manager"] = manager_elem.text
+                            user_info["manager"] = manager_elem.text
+                            
+                        # Extract last editor
+                        last_editor_elem = root.find(f'{ns}LastAuthor')
+                        if last_editor_elem is not None and last_editor_elem.text:
+                            app_props["last_editor"] = last_editor_elem.text
+                            user_info["last_editor"] = last_editor_elem.text
+                        
+                        # Add to result
+                        if app_props:
+                            result["app_properties"] = app_props
+                        
+                        if user_info:
+                            result["user_info"] = user_info
+                    except Exception as e:
+                        self.logger.debug(f"Error extracting app.xml: {str(e)}")
+                        
+                # Extract core.xml for more user information
+                if 'docProps/core.xml' in z.namelist():
+                    try:
+                        from xml.etree import ElementTree as ET
+                        core_xml = z.read('docProps/core.xml').decode('utf-8')
+                        root = ET.fromstring(core_xml)
+                        
+                        # Extract namespaces
+                        namespaces = {
+                            'dc': 'http://purl.org/dc/elements/1.1/',
+                            'cp': 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties',
+                            'dcterms': 'http://purl.org/dc/terms/'
+                        }
+                        
+                        user_info = result.get("user_info", {})
+                        
+                        # Extract creator
+                        creator_elem = root.find('.//dc:creator', namespaces)
+                        if creator_elem is not None and creator_elem.text:
+                            user_info["creator"] = creator_elem.text
+                        
+                        # Extract last modifier
+                        last_mod_elem = root.find('.//cp:lastModifiedBy', namespaces)
+                        if last_mod_elem is not None and last_mod_elem.text:
+                            user_info["last_modified_by"] = last_mod_elem.text
+                        
+                        # Add to result
+                        if user_info:
+                            result["user_info"] = user_info
+                    except Exception as e:
+                        self.logger.debug(f"Error extracting core.xml: {str(e)}")
         except Exception as e:
-            self.logger.debug(f"Error checking for custom XML: {str(e)}")
+            self.logger.debug(f"Error checking for custom XML and user info: {str(e)}")
         
         return result
     

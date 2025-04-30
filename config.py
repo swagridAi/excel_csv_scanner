@@ -25,7 +25,8 @@ EXCEL_DEFAULTS = {
     "has_embedded_objects": False,
     "sheets_info": [],
     "sheet_names": [],
-    "excel_format": "unknown"
+    "excel_format": "unknown",
+    "user_info": {}  # Storage for user-related metadata
 }
 
 # Default values for CSV file metadata
@@ -40,7 +41,8 @@ CSV_DEFAULTS = {
     "has_pivot_table": False,
     "has_empty_values": False,
     "empty_values_count": 0,
-    "has_quotes": False
+    "has_quotes": False,
+    "user_info": {}  # Storage for user-related metadata
 }
 
 # Encoding detection settings
@@ -53,32 +55,68 @@ CSV_DELIMITERS_TO_GUESS = [',', ';', '\t', '|', ':']  # Possible delimiters
 # Excel parsing settings
 EXCEL_MAX_ROWS = 5000  # Maximum number of rows to scan in Excel sheets
 
-# Report settings
+# Report settings - updated to include user and timestamp metadata
 REPORT_COLUMN_ORDER = [
+    # Primary identifiers
     "filename", 
     "file_path", 
     "extension", 
+    
+    # Timestamps (prioritized)
+    "created_date", 
+    "modified_date", 
+    "accessed_date",
+    "created_date_formatted", 
+    "modified_date_formatted", 
+    "accessed_date_formatted",
+    
+    # User information
+    "user_creator",
+    "user_last_modified_by",
+    "user_last_saved_by",
+    "user_company",
+    "user_manager",
+    "user_contact",
+    
+    # File attributes
     "size_bytes", 
     "size_kb", 
-    "modified_date", 
-    "created_date", 
+    "size_mb",
     "is_excel", 
     "is_csv", 
     "excel_format", 
     "encoding", 
     "delimiter", 
+    
+    # Content information
     "sheet_count", 
     "row_count", 
     "column_count", 
     "has_vba", 
     "has_pivot_table",
     "has_custom_xml",
-    "has_embedded_objects"
+    "has_embedded_objects",
+    "has_header",
+    "has_empty_values"
 ]
 
 # Excel report styling
 EXCEL_HEADER_STYLE = {
     "fill_color": "E9ECEF",
+    "font_bold": True,
+    "border": True
+}
+
+# User metadata style
+USER_HEADER_STYLE = {
+    "fill_color": "D4E6F1",  # Light blue for user metadata
+    "font_bold": True,
+    "border": True
+}
+
+# Timestamp metadata style
+TIMESTAMP_HEADER_STYLE = {
+    "fill_color": "FADBD8",  # Light red for timestamps
     "font_bold": True,
     "border": True
 }
@@ -119,6 +157,8 @@ def get_config() -> Dict[str, Any]:
         'detect_vba': True,
         'detect_pivot_tables': True,
         'analyze_csv_structure': True,
+        'extract_user_info': True,  # New flag for extracting user information
+        'extract_timestamps': True,  # New flag for extracting timestamps
     }
     
     return config

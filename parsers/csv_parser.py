@@ -4,6 +4,7 @@ CSV Parser implementation for extracting metadata from CSV files.
 """
 import csv
 import pandas as pd
+import re
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional, Union
 
@@ -36,6 +37,31 @@ class CSVParser(BaseParser):
             default_values=CSV_DEFAULTS,
             file_extensions=CSV_EXTENSIONS
         )
+        # Common patterns for user information in CSV comments or headers
+        self.user_patterns = {
+            'creator': [
+                r'(?i)created\s+by[:\s]+([^,;\r\n]+)',
+                r'(?i)author[:\s]+([^,;\r\n]+)',
+                r'(?i)generated\s+by[:\s]+([^,;\r\n]+)',
+                r'(?i)prepared\s+by[:\s]+([^,;\r\n]+)'
+            ],
+            'modified_by': [
+                r'(?i)modified\s+by[:\s]+([^,;\r\n]+)',
+                r'(?i)edited\s+by[:\s]+([^,;\r\n]+)',
+                r'(?i)updated\s+by[:\s]+([^,;\r\n]+)'
+            ],
+            'company': [
+                r'(?i)company[:\s]+([^,;\r\n]+)',
+                r'(?i)organization[:\s]+([^,;\r\n]+)',
+                r'(?i)dept\.?[:\s]+([^,;\r\n]+)',
+                r'(?i)department[:\s]+([^,;\r\n]+)'
+            ],
+            'contact': [
+                r'(?i)contact[:\s]+([^,;\r\n]+)',
+                r'(?i)email[:\s]+([^\s,;\r\n]+)',
+                r'(?i)phone[:\s]+([^,;\r\n]+)'
+            ]
+        }
     
     @safe_parser(default_return=CSV_DEFAULTS)
     def parse(self, file_path: Union[str, Path]) -> Dict[str, Any]:
@@ -77,6 +103,11 @@ class CSVParser(BaseParser):
         structure_info = self._analyze_structure(path, encoding, delimiter, sample_rows=10)
         if structure_info:
             result.update(structure_info)
+        
+        # Try to extract user information from CSV
+        user_info = self._extract_user_info(path, encoding, delimiter)
+        if user_info:
+            result["user_info"] = user_info
         
         return result
     
@@ -183,4 +214,77 @@ class CSVParser(BaseParser):
             
         except Exception as e:
             self.logger.debug(f"Structure analysis failed: {str(e)}")
+            return None
+    
+    @safe_operation(operation_name="extracting user information from CSV")
+    def _extract_user_info(self, file_path: Path, encoding: str, delimiter: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract potential user information from CSV file.
+        
+        This method looks for common patterns that might indicate user information
+        in CSV comments, headers, or metadata rows.
+        
+        Args:
+            file_path: Path to the CSV file
+            encoding: File encoding
+            delimiter: CSV delimiter
+            
+        Returns:
+            Dictionary with user information or None if no user info found
+        """
+        try:
+            # Read the first several lines for analysis
+            with create_file_handle(file_path, 'r', encoding=encoding, errors='replace') as f:
+                # Read first 20 lines which might contain metadata or comments
+                header_lines = [f.readline() for _ in range(20) if f.readline()]
+                header_text = '\n'.join(header_lines)
+            
+            user_info = {}
+            
+            # Look for patterns in the header text
+            for info_type, patterns in self.user_patterns.items():
+                for pattern in patterns:
+                    matches = re.search(pattern, header_text)
+                    if matches and matches.group(1).strip():
+                        user_info[info_type] = matches.group(1).strip()
+                        break
+            
+            # If nothing found in header comments, check if there might be metadata rows
+            if not user_info:
+                try:
+                    # Read first 10 rows
+                    df = pd.read_csv(file_path, encoding=encoding, delimiter=delimiter, nrows=10)
+                    
+                    # Check if any column names match user metadata
+                    columns = df.columns.tolist()
+                    for col in columns:
+                        col_lower = str(col).lower()
+                        if any(keyword in col_lower for keyword in ['created by', 'author', 'user', 'creator']):
+                            # Check the first non-null value
+                            values = df[col].dropna()
+                            if not values.empty:
+                                user_info['creator'] = str(values.iloc[0])
+                        
+                        elif any(keyword in col_lower for keyword in ['modified by', 'updated by', 'editor']):
+                            values = df[col].dropna()
+                            if not values.empty:
+                                user_info['modified_by'] = str(values.iloc[0])
+                        
+                        elif any(keyword in col_lower for keyword in ['company', 'organization', 'dept']):
+                            values = df[col].dropna()
+                            if not values.empty:
+                                user_info['company'] = str(values.iloc[0])
+                except Exception as e:
+                    self.logger.debug(f"Failed to check for user info in data rows: {str(e)}")
+            
+            # Check for email addresses which might indicate user information
+            email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
+            email_matches = re.findall(email_pattern, header_text)
+            if email_matches and 'contact' not in user_info:
+                user_info['contact'] = email_matches[0]
+            
+            return user_info if user_info else None
+            
+        except Exception as e:
+            self.logger.debug(f"User info extraction failed: {str(e)}")
             return None

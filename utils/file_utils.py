@@ -11,6 +11,7 @@ import mmap
 import chardet
 import logging
 import io
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, List, Dict, Any, Optional, Union, BinaryIO, TextIO, Tuple, Callable
@@ -154,6 +155,22 @@ def get_file_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
         # Add access date
         metadata["accessed_date"] = datetime.fromtimestamp(stat_info.st_atime)
         
+        # Get and add platform-specific file attributes
+        try:
+            platform_attrs = get_platform_file_attributes(path)
+            if platform_attrs:
+                metadata.update(platform_attrs)
+        except Exception as e:
+            logger.debug(f"Error getting platform-specific attributes: {str(e)}")
+        
+        # Get file owner information
+        try:
+            owner_info = get_file_owner(path)
+            if owner_info:
+                metadata.update(owner_info)
+        except Exception as e:
+            logger.debug(f"Error getting file owner: {str(e)}")
+        
         # File type flags
         metadata["is_excel"] = path.suffix.lower() in ['.xls', '.xlsx', '.xlsm', '.xlsb']
         metadata["is_csv"] = path.suffix.lower() == '.csv'
@@ -169,6 +186,12 @@ def get_file_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
             except Exception:
                 metadata["is_binary"] = False
         
+        # Add formatted date strings for better display
+        for date_field in ['created_date', 'modified_date', 'accessed_date']:
+            if date_field in metadata and metadata[date_field]:
+                metadata[f"{date_field}_formatted"] = metadata[date_field].strftime("%Y-%m-%d %H:%M:%S")
+                metadata[f"{date_field}_iso"] = metadata[date_field].isoformat()
+
         return metadata
     
     except Exception as e:
@@ -179,6 +202,192 @@ def get_file_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
             "extension": path.suffix.lower() if path.suffix else "",
             "error": f"Failed to get file metadata: {str(e)}"
         }
+
+
+def get_platform_file_attributes(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Get platform-specific file attributes.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        Dictionary with platform-specific attributes
+    """
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    attrs = {}
+    
+    # Windows-specific attributes
+    if platform.system() == 'Windows':
+        try:
+            import win32api
+            import win32con
+            
+            file_attr = win32api.GetFileAttributes(str(path))
+            
+            attrs["is_readonly"] = bool(file_attr & win32con.FILE_ATTRIBUTE_READONLY)
+            attrs["is_hidden"] = bool(file_attr & win32con.FILE_ATTRIBUTE_HIDDEN)
+            attrs["is_system"] = bool(file_attr & win32con.FILE_ATTRIBUTE_SYSTEM)
+            attrs["is_archive"] = bool(file_attr & win32con.FILE_ATTRIBUTE_ARCHIVE)
+            attrs["is_temporary"] = bool(file_attr & win32con.FILE_ATTRIBUTE_TEMPORARY)
+            attrs["is_offline"] = bool(file_attr & win32con.FILE_ATTRIBUTE_OFFLINE)
+            attrs["is_encrypted"] = bool(file_attr & win32con.FILE_ATTRIBUTE_ENCRYPTED)
+            
+            # Get file version information if available
+            try:
+                info = win32api.GetFileVersionInfo(str(path), '\\')
+                if info:
+                    # Try to extract file version
+                    ms = info['FileVersionMS']
+                    ls = info['FileVersionLS']
+                    attrs["file_version"] = f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+            except Exception:
+                pass
+        except ImportError:
+            # win32api not available
+            pass
+    
+    # Unix-specific attributes
+    elif platform.system() in ['Linux', 'Darwin']:
+        try:
+            import stat
+            
+            file_stat = path.stat()
+            
+            # File permissions
+            attrs["permissions"] = oct(file_stat.st_mode)[-3:]  # Last 3 digits of octal
+            attrs["is_readonly"] = not bool(file_stat.st_mode & stat.S_IWUSR)
+            attrs["is_executable"] = bool(file_stat.st_mode & stat.S_IXUSR)
+            
+            # Special flags (macOS only)
+            if platform.system() == 'Darwin':
+                try:
+                    import xattr
+                    
+                    # Check for macOS quarantine flag
+                    try:
+                        quarantine = xattr.getxattr(str(path), 'com.apple.quarantine')
+                        attrs["is_quarantined"] = bool(quarantine)
+                    except:
+                        attrs["is_quarantined"] = False
+                    
+                    # Check for file tags
+                    try:
+                        tags_attr = xattr.getxattr(str(path), 'com.apple.metadata:_kMDItemUserTags')
+                        if tags_attr:
+                            import plistlib
+                            tags = plistlib.loads(tags_attr)
+                            attrs["tags"] = tags
+                    except:
+                        pass
+                except ImportError:
+                    # xattr not available
+                    pass
+        except Exception as e:
+            logger.debug(f"Error getting Unix file attributes: {str(e)}")
+    
+    return attrs
+
+
+def get_file_owner(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Get file owner information.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        Dictionary with owner information
+    """
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    owner_info = {}
+    
+    # Try to get file owner on Unix-like systems
+    if platform.system() in ['Linux', 'Darwin']:
+        try:
+            import pwd
+            import grp
+            
+            stat_info = path.stat()
+            owner_info["owner_id"] = stat_info.st_uid
+            owner_info["group_id"] = stat_info.st_gid
+            
+            try:
+                owner = pwd.getpwuid(stat_info.st_uid)
+                owner_info["owner_user"] = owner.pw_name
+                owner_info["owner_gecos"] = owner.pw_gecos  # Full name and other info
+            except KeyError:
+                owner_info["owner_user"] = str(stat_info.st_uid)
+            
+            try:
+                group = grp.getgrgid(stat_info.st_gid)
+                owner_info["owner_group"] = group.gr_name
+            except KeyError:
+                owner_info["owner_group"] = str(stat_info.st_gid)
+        except ImportError:
+            # pwd/grp modules not available
+            pass
+    
+    # Try to get file owner on Windows
+    elif platform.system() == 'Windows':
+        try:
+            import win32security
+            import win32con
+            
+            # Get security descriptor
+            security_descriptor = win32security.GetFileSecurity(
+                str(path),
+                win32security.OWNER_SECURITY_INFORMATION | win32security.GROUP_SECURITY_INFORMATION
+            )
+            
+            # Get owner
+            owner_sid = security_descriptor.GetSecurityDescriptorOwner()
+            owner_name, owner_domain, _ = win32security.LookupAccountSid(None, owner_sid)
+            owner_info["owner_user"] = owner_name
+            owner_info["owner_domain"] = owner_domain
+            owner_info["owner_sid"] = str(owner_sid)
+            
+            # Try to get group
+            try:
+                group_sid = security_descriptor.GetSecurityDescriptorGroup()
+                if group_sid:
+                    group_name, group_domain, _ = win32security.LookupAccountSid(None, group_sid)
+                    owner_info["owner_group"] = group_name
+                    owner_info["group_domain"] = group_domain
+            except:
+                pass
+            
+            # Get additional ACL information
+            try:
+                dacl = security_descriptor.GetSecurityDescriptorDacl()
+                if dacl:
+                    # Check if the file is shared with others
+                    ace_count = dacl.GetAceCount()
+                    if ace_count > 1:  # More than just the owner
+                        owner_info["is_shared"] = True
+                        
+                        # Get the first few ACEs for reference
+                        users_with_access = []
+                        for i in range(min(ace_count, 5)):  # Limit to first 5
+                            ace = dacl.GetAce(i)
+                            if ace:
+                                ace_type, ace_flags, ace_mask, ace_sid = ace
+                                try:
+                                    user, domain, _ = win32security.LookupAccountSid(None, ace_sid)
+                                    users_with_access.append(f"{domain}\\{user}")
+                                except:
+                                    users_with_access.append(str(ace_sid))
+                        
+                        if users_with_access:
+                            owner_info["users_with_access"] = users_with_access
+                    else:
+                        owner_info["is_shared"] = False
+            except Exception as e:
+                logger.debug(f"Error getting ACL information: {str(e)}")
+        except (ImportError, Exception) as e:
+            logger.debug(f"Error getting Windows file owner: {str(e)}")
+    
+    return owner_info
 
 
 def get_human_size(size_bytes: int) -> str:
@@ -661,3 +870,163 @@ def copy_file_safely(
     
     # Copy the file
     return Path(shutil.copy2(src_path, dst_path))
+
+
+def get_file_access_history(file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to get file access history information.
+    
+    This is only available on certain systems and requires additional modules.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        Dictionary with access history or None if not available
+    """
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    
+    # Windows file access history
+    if platform.system() == 'Windows':
+        try:
+            # Requires the pywin32 module
+            import win32com.client
+            import win32con
+            import win32file
+            import win32security
+            from datetime import datetime
+            
+            # Try to get last access info using FileSystem object
+            history = {}
+            
+            # First try to get USN journal entries (requires admin rights)
+            try:
+                # Get the volume where the file is located
+                drive_letter = os.path.splitdrive(path)[0]
+                if drive_letter:
+                    # Create a handle to the volume
+                    hVolume = win32file.CreateFile(
+                        f"\\\\.\\{drive_letter}",
+                        win32con.GENERIC_READ,
+                        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+                        None,
+                        win32con.OPEN_EXISTING,
+                        0,
+                        None
+                    )
+                    
+                    # Get USN journal information
+                    journal_info = win32file.GetUsnJournalInformation(hVolume)
+                    if journal_info:
+                        history["has_journal"] = True
+                        # Note: Actual USN record access requires more complex implementation
+                        # and admin privileges, so we just note that the journal exists
+            except:
+                pass
+            
+            # Get basic file access information
+            try:
+                # Convert the path to a shell item
+                shell = win32com.client.Dispatch("Shell.Application")
+                folder = shell.NameSpace(os.path.dirname(path))
+                file_item = folder.ParseName(os.path.basename(path))
+                
+                # Try to get access times
+                for i in range(0, 300):  # Try all possible property indices
+                    prop_name = folder.GetDetailsOf(None, i)
+                    if prop_name.lower() in ['date accessed', 'last accessed', 'accessed']:
+                        value = folder.GetDetailsOf(file_item, i)
+                        if value:
+                            history["access_time_shell"] = value
+                    elif prop_name.lower() in ['date modified', 'last modified', 'modified']:
+                        value = folder.GetDetailsOf(file_item, i)
+                        if value:
+                            history["modified_time_shell"] = value
+                    elif prop_name.lower() in ['date created', 'created']:
+                        value = folder.GetDetailsOf(file_item, i)
+                        if value:
+                            history["created_time_shell"] = value
+                    elif prop_name.lower() in ['owner', 'author']:
+                        value = folder.GetDetailsOf(file_item, i)
+                        if value:
+                            history["owner_shell"] = value
+            except:
+                pass
+                
+            # Try to get security audit information
+            try:
+                # Check if the file has auditing enabled
+                security_info = win32security.GetFileSecurity(
+                    str(path),
+                    win32security.SACL_SECURITY_INFORMATION
+                )
+                sacl = security_info.GetSecurityDescriptorSacl()
+                if sacl and sacl.GetAceCount() > 0:
+                    history["has_audit_trail"] = True
+                    # Note: Reading the actual audit trail requires admin privileges
+                    # and accessing the Windows Event Log
+            except:
+                history["has_audit_trail"] = False
+                
+            return history if history else None
+            
+        except ImportError:
+            # Required modules not available
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting Windows file access history: {str(e)}")
+            return None
+    
+    # macOS file access history
+    elif platform.system() == 'Darwin':
+        try:
+            # Try to get Spotlight metadata
+            import subprocess
+            
+            try:
+                # Use mdls to get metadata attributes
+                result = subprocess.run(
+                    ['mdls', str(path)],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                
+                if result.stdout:
+                    history = {}
+                    lines = result.stdout.splitlines()
+                    
+                    for line in lines:
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Extract relevant metadata
+                            if 'kMDItemLastUsedDate' in key:
+                                history["last_used_date"] = value
+                            elif 'kMDItemUsedDates' in key:
+                                history["used_dates"] = value
+                            elif 'kMDItemLastUsedApplication' in key:
+                                history["last_used_application"] = value
+                            elif 'kMDItemUsedApplications' in key:
+                                history["used_applications"] = value
+                            elif 'kMDItemContentCreationDate' in key:
+                                history["creation_date"] = value
+                            elif 'kMDItemContentModificationDate' in key:
+                                history["modification_date"] = value
+                            elif 'kMDItemAuthors' in key:
+                                history["authors"] = value
+                    
+                    return history if history else None
+            except subprocess.SubprocessError:
+                pass
+                
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error getting macOS file access history: {str(e)}")
+            return None
+    
+    # Not supported on other platforms
+    return None
