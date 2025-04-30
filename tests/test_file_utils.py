@@ -62,9 +62,11 @@ class TestFileUtils(unittest.TestCase):
     
     def test_find_files(self):
         # Test finding all text files in the test directory
+        # Updated to expect recursive search by default, so both text files should be found
         files = list(find_files(self.test_dir, ['.txt']))
-        self.assertEqual(len(files), 1)
-        self.assertEqual(files[0], self.text_file)
+        self.assertEqual(len(files), 2)  # Should find both the root text file and the subdirectory text file
+        self.assertTrue(self.text_file in files)
+        self.assertTrue(self.sub_file in files)
         
         # Test finding all CSV files in the test directory
         files = list(find_files(self.test_dir, ['.csv']))
@@ -72,13 +74,13 @@ class TestFileUtils(unittest.TestCase):
         
         # Test finding all files in the test directory
         files = list(find_files(self.test_dir, ['.txt', '.csv']))
-        self.assertEqual(len(files), 3)
+        self.assertEqual(len(files), 4)  # 2 text files + 2 CSV files
         
-        # Test recursive file finding
+        # Test recursive file finding with explicit -1 (should be same as default)
         files = list(find_files(self.test_dir, ['.txt'], recursion_depth=-1))
         self.assertEqual(len(files), 2)  # Should find both text files
         
-        # Test non-recursive file finding
+        # Test non-recursive file finding with explicit 0
         files = list(find_files(self.test_dir, ['.txt'], recursion_depth=0))
         self.assertEqual(len(files), 1)  # Should only find the root text file
     
