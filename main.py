@@ -8,8 +8,9 @@ import logging
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import time
+import platform
 
 from config import (
     get_config, LOG_FORMAT, LOG_FILE, 
@@ -19,11 +20,209 @@ from utils.file_utils import (
     find_files, 
     get_file_metadata,
     file_scanner,
-    ensure_directory_exists
+    ensure_directory_exists,
+    get_human_size
 )
 from utils.error_utils import ErrorCollection, safe_operation
 from parsers.parser_registry import create_parser_registry, analyze_file
 from report.reporter import Reporter
+
+
+def get_folder_metadata(folder_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Get comprehensive metadata for a folder.
+    
+    Args:
+        folder_path: Path to the folder
+        
+    Returns:
+        Dictionary with folder metadata (creation date, owner, etc.)
+    """
+    logger = logging.getLogger(__name__)
+    path = Path(folder_path) if isinstance(folder_path, str) else folder_path
+    
+    try:
+        stat_info = path.stat()
+        
+        # Basic metadata
+        metadata = {
+            "folder_path": str(path),
+            "folder_name": path.name,
+            "modified_date": datetime.fromtimestamp(stat_info.st_mtime),
+        }
+        
+        # Add creation date if available
+        if hasattr(stat_info, 'st_birthtime'):  # macOS, BSD
+            metadata["folder_created_date"] = datetime.fromtimestamp(stat_info.st_birthtime)
+        else:  # Linux and others use st_ctime
+            metadata["folder_created_date"] = datetime.fromtimestamp(stat_info.st_ctime)
+        
+        # Add access date
+        metadata["folder_accessed_date"] = datetime.fromtimestamp(stat_info.st_atime)
+        
+        # Get folder owner information
+        try:
+            owner_info = get_folder_owner(path)
+            if owner_info:
+                metadata.update(owner_info)
+        except Exception as e:
+            logger.debug(f"Error getting folder owner: {str(e)}")
+            
+        # Format dates for better display
+        for date_field in ['folder_created_date', 'folder_modified_date', 'folder_accessed_date']:
+            if date_field in metadata and metadata[date_field]:
+                metadata[f"{date_field}_formatted"] = metadata[date_field].strftime("%Y-%m-%d %H:%M:%S")
+                metadata[f"{date_field}_iso"] = metadata[date_field].isoformat()
+                
+        # Add folder size information
+        try:
+            folder_size = get_folder_size(path)
+            metadata["folder_size_bytes"] = folder_size
+            metadata["folder_size_kb"] = round(folder_size / 1024, 2)
+            metadata["folder_size_mb"] = round(folder_size / (1024 * 1024), 2)
+            metadata["folder_size_human"] = get_human_size(folder_size)
+        except Exception as e:
+            logger.debug(f"Error calculating folder size: {str(e)}")
+            
+        return metadata
+        
+    except Exception as e:
+        logger.error(f"Error getting metadata for folder {folder_path}: {str(e)}")
+        return {
+            "folder_path": str(path),
+            "folder_name": path.name,
+            "error": f"Failed to get folder metadata: {str(e)}"
+        }
+
+
+def get_folder_owner(folder_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Get owner information for a folder.
+    
+    Args:
+        folder_path: Path to the folder
+        
+    Returns:
+        Dictionary with owner information
+    """
+    logger = logging.getLogger(__name__)
+    path = Path(folder_path) if isinstance(folder_path, str) else folder_path
+    owner_info = {}
+    
+    # Try to get folder owner on Unix-like systems
+    if platform.system() in ['Linux', 'Darwin']:
+        try:
+            import pwd
+            import grp
+            
+            stat_info = path.stat()
+            owner_info["folder_owner_id"] = stat_info.st_uid
+            owner_info["folder_group_id"] = stat_info.st_gid
+            
+            try:
+                owner = pwd.getpwuid(stat_info.st_uid)
+                owner_info["folder_owner_user"] = owner.pw_name
+                owner_info["folder_owner_gecos"] = owner.pw_gecos  # Full name and other info
+            except KeyError:
+                owner_info["folder_owner_user"] = str(stat_info.st_uid)
+            
+            try:
+                group = grp.getgrgid(stat_info.st_gid)
+                owner_info["folder_owner_group"] = group.gr_name
+            except KeyError:
+                owner_info["folder_owner_group"] = str(stat_info.st_gid)
+        except ImportError:
+            # pwd/grp modules not available
+            logger.debug("pwd/grp modules not available for Unix folder ownership detection")
+            pass
+    
+    # Try to get folder owner on Windows
+    elif platform.system() == 'Windows':
+        try:
+            import win32security
+            import win32con
+            
+            # Get security descriptor
+            security_descriptor = win32security.GetFileSecurity(
+                str(path),
+                win32security.OWNER_SECURITY_INFORMATION | win32security.GROUP_SECURITY_INFORMATION
+            )
+            
+            # Get owner
+            owner_sid = security_descriptor.GetSecurityDescriptorOwner()
+            owner_name, owner_domain, _ = win32security.LookupAccountSid(None, owner_sid)
+            owner_info["folder_owner_user"] = owner_name
+            owner_info["folder_owner_domain"] = owner_domain
+            owner_info["folder_owner_sid"] = str(owner_sid)
+            
+            # Try to get group
+            try:
+                group_sid = security_descriptor.GetSecurityDescriptorGroup()
+                if group_sid:
+                    group_name, group_domain, _ = win32security.LookupAccountSid(None, group_sid)
+                    owner_info["folder_owner_group"] = group_name
+                    owner_info["folder_group_domain"] = group_domain
+            except:
+                pass
+                
+            # Check folder permissions and inheritance
+            try:
+                dacl = security_descriptor.GetSecurityDescriptorDacl()
+                if dacl:
+                    # Get information about folder permissions
+                    ace_count = dacl.GetAceCount()
+                    folder_permissions = []
+                    
+                    for i in range(min(ace_count, 5)):  # Limit to first 5 ACEs
+                        ace = dacl.GetAce(i)
+                        if ace:
+                            ace_type, ace_flags, ace_mask, ace_sid = ace
+                            try:
+                                user, domain, _ = win32security.LookupAccountSid(None, ace_sid)
+                                ace_info = {
+                                    "user": f"{domain}\\{user}",
+                                    "type": ace_type,
+                                    "inherited": bool(ace_flags & win32security.INHERITED_ACE)
+                                }
+                                folder_permissions.append(ace_info)
+                            except:
+                                pass
+                    
+                    if folder_permissions:
+                        owner_info["folder_permissions"] = folder_permissions
+            except Exception as e:
+                logger.debug(f"Error getting folder permissions: {str(e)}")
+                
+        except ImportError:
+            logger.debug("win32security module not available for Windows folder ownership detection")
+        except Exception as e:
+            logger.debug(f"Error getting Windows folder owner: {str(e)}")
+    
+    return owner_info
+
+
+def get_folder_size(folder_path: Union[str, Path]) -> int:
+    """
+    Calculate the total size of a folder and its contents.
+    
+    Args:
+        folder_path: Path to the folder
+        
+    Returns:
+        Size in bytes
+    """
+    logger = logging.getLogger(__name__)
+    path = Path(folder_path) if isinstance(folder_path, str) else folder_path
+    total_size = 0
+    
+    try:
+        for item in path.glob('**/*'):
+            if item.is_file():
+                total_size += item.stat().st_size
+    except Exception as e:
+        logger.debug(f"Error calculating folder size: {str(e)}")
+    
+    return total_size
 
 
 def setup_logging(log_level: str) -> logging.Logger:
@@ -96,6 +295,11 @@ def parse_args() -> argparse.Namespace:
         '--exclude',
         help='Regex pattern for filenames to exclude'
     )
+    parser.add_argument(
+        '--no-folder-info',
+        action='store_true',
+        help='Disable extraction of folder metadata'
+    )
     
     return parser.parse_args()
 
@@ -165,6 +369,34 @@ def main() -> None:
     # Create output directory if it doesn't exist
     ensure_directory_exists(os.path.dirname(config['output_file']))
     
+    # Get input folder metadata and ownership information
+    folder_metadata = {"folder_path": config['input_folder']}
+    if not args.no_folder_info:
+        try:
+            input_folder = Path(config['input_folder'])
+            folder_metadata = get_folder_metadata(input_folder)
+            logger.info(f"Analyzing folder: {input_folder.name}")
+            
+            # Log folder owner information if available
+            if 'folder_owner_user' in folder_metadata:
+                logger.info(f"Folder owner: {folder_metadata['folder_owner_user']}")
+                
+                # Add domain info on Windows
+                if 'folder_owner_domain' in folder_metadata:
+                    logger.info(f"Folder owner domain: {folder_metadata['folder_owner_domain']}")
+                
+            if 'folder_owner_group' in folder_metadata:
+                logger.info(f"Folder group: {folder_metadata['folder_owner_group']}")
+                
+            if 'folder_created_date_formatted' in folder_metadata:
+                logger.info(f"Folder created: {folder_metadata['folder_created_date_formatted']}")
+                
+            if 'folder_size_human' in folder_metadata:
+                logger.info(f"Folder size: {folder_metadata['folder_size_human']}")
+                
+        except Exception as e:
+            logger.warning(f"Could not get folder metadata: {str(e)}")
+    
     # Create parser registry
     registry = create_parser_registry()
     
@@ -195,6 +427,11 @@ def main() -> None:
             error_handler
         )
         
+        # Add folder metadata to each result
+        if not args.no_folder_info:
+            for result in results:
+                result['folder_metadata'] = folder_metadata
+        
         # Count file types
         file_count = len(results)
         for result in results:
@@ -219,6 +456,9 @@ def main() -> None:
         logger.info(f"Finished scanning {file_count} files in {duration:.2f} seconds.")
         logger.info(f"Results: {excel_count} Excel files, {csv_count} CSV files")
         logger.info(f"Found {vba_count} files with VBA macros and {pivot_count} files with PivotTables")
+        
+        if 'folder_owner_user' in folder_metadata:
+            logger.info(f"Folder '{Path(config['input_folder']).name}' is owned by: {folder_metadata['folder_owner_user']}")
         
         if errors:
             logger.warning(f"Encountered {len(errors)} errors during processing")

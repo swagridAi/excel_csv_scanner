@@ -12,6 +12,8 @@ EXCEL_TEMPLATE_HEADER = [
     "Accessed Date",
     "Creator",
     "Last Modified By",
+    "Folder Owner",
+    "Folder Created Date",
     "Is Excel", 
     "Has VBA", 
     "Has PivotTable", 
@@ -22,7 +24,7 @@ EXCEL_TEMPLATE_HEADER = [
     "Encoding"
 ]
 
-# HTML report template with enhanced support for user and timestamp information
+# HTML report template with enhanced support for user, timestamp, and folder information
 HTML_REPORT_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -75,6 +77,13 @@ HTML_REPORT_TEMPLATE = """
             border-radius: 5px;
             border-left: 5px solid #e74c3c;
         }
+        .folder-info {
+            margin-bottom: 30px;
+            background-color: #ebf5eb;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 5px solid #27ae60;
+        }
         .meta-info {
             color: #7f8c8d;
             font-size: 0.9em;
@@ -115,6 +124,14 @@ HTML_REPORT_TEMPLATE = """
             background-color: #3498db;
             color: white;
         }
+        .folder-table {
+            width: auto;
+            min-width: 500px;
+        }
+        .folder-table th {
+            background-color: #27ae60;
+            color: white;
+        }
         .error {
             color: #e74c3c;
         }
@@ -138,11 +155,19 @@ HTML_REPORT_TEMPLATE = """
             color: #943126;
             font-weight: bold;
         }
+        .folder-column {
+            background-color: #D5F5E3 !important;
+            color: #196F3D;
+            font-weight: bold;
+        }
         .user-cell {
             background-color: #EBF5FB !important;
         }
         .date-cell {
             background-color: #FDEDEC !important;
+        }
+        .folder-cell {
+            background-color: #E9F7EF !important;
         }
         
         /* Tab styles */
@@ -259,6 +284,61 @@ HTML_REPORT_TEMPLATE = """
             color: #2980b9;
         }
         
+        /* Folder information specific styles */
+        .folder-details {
+            margin-top: 20px;
+        }
+        .folder-card {
+            background-color: #E9F7EF;
+            border-radius: 5px;
+            padding: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .folder-card h3 {
+            margin-top: 0;
+            color: #27ae60;
+            border-bottom: 1px solid #AED6BE;
+            padding-bottom: 8px;
+        }
+        .folder-props {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        .folder-prop-name {
+            font-weight: bold;
+            color: #196F3D;
+        }
+        .folder-prop-value {
+            color: #2C3E50;
+        }
+        .folder-permission-list {
+            margin-top: 15px;
+        }
+        .folder-permission-list h4 {
+            margin-bottom: 10px;
+            color: #196F3D;
+        }
+        .folder-permission-list ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .folder-permission-list li {
+            padding: 5px 10px;
+            margin-bottom: 5px;
+            background-color: #F4FCF6;
+            border-radius: 3px;
+            border-left: 3px solid #27ae60;
+        }
+        .folder-permission-inherited {
+            font-style: italic;
+            color: #7F8C8D;
+            margin-left: 5px;
+            font-size: 0.9em;
+        }
+        
         /* Additional styling can be added here */
         {additional_css}
     </style>
@@ -345,9 +425,18 @@ HTML_REPORT_TEMPLATE = """
     <!-- Tabbed interface -->
     <div class="container">
         <div class="tabs">
+            <div class="tab" data-target="tab-folder">Folder Information</div>
             <div class="tab active" data-target="tab-files">File Analysis</div>
             <div class="tab" data-target="tab-users">User Information</div>
             <div class="tab" data-target="tab-timeline">Timeline</div>
+        </div>
+        
+        <!-- Folder Information Tab -->
+        <div id="tab-folder" class="tab-content">
+            <h2>Folder Information</h2>
+            <p>This tab shows information about the folder being analyzed including ownership information.</p>
+            
+            {folder_html}
         </div>
         
         <!-- File Analysis Tab -->
@@ -395,11 +484,20 @@ HTML_REPORT_TEMPLATE = """
 </html>
 """
 
-# Basic text report template
+# Basic text report template with folder information
 TEXT_REPORT_TEMPLATE = """
 Excel and CSV File Analysis Report
 =================================
 Generated on: {date}
+
+Folder Information
+----------------
+Folder path: {folder_path}
+Folder owner: {folder_owner}
+Folder group: {folder_group}
+Folder created: {folder_created}
+Folder modified: {folder_modified}
+Folder size: {folder_size}
 
 Summary
 -------
@@ -427,7 +525,7 @@ Detailed Results
 
 """
 
-# JSON report schema template
+# JSON report schema template with folder information
 JSON_SCHEMA = {
     "metadata": {
         "generated_at": "",  # ISO timestamp
@@ -440,5 +538,62 @@ JSON_SCHEMA = {
         "files_with_complete_metadata": 0,
         "unique_users": []
     },
+    "folder_info": {
+        "folder_path": "",
+        "folder_name": "",
+        "folder_owner": "",
+        "folder_group": "",
+        "folder_created_date": "",
+        "folder_modified_date": "",
+        "folder_accessed_date": "",
+        "folder_size": 0,
+        "folder_permissions": []
+    },
     "results": []  # List of file analysis results
 }
+
+# Folder HTML template for more flexible composition
+FOLDER_HTML_TEMPLATE = """
+<div class="folder-card">
+    <h3>Folder Overview</h3>
+    <div class="folder-props">
+        <div class="folder-prop-name">Path:</div>
+        <div class="folder-prop-value">{folder_path}</div>
+        
+        <div class="folder-prop-name">Name:</div>
+        <div class="folder-prop-value">{folder_name}</div>
+        
+        <div class="folder-prop-name">Owner:</div>
+        <div class="folder-prop-value">{folder_owner}</div>
+        
+        <div class="folder-prop-name">Group:</div>
+        <div class="folder-prop-value">{folder_group}</div>
+        
+        <div class="folder-prop-name">Created:</div>
+        <div class="folder-prop-value">{folder_created}</div>
+        
+        <div class="folder-prop-name">Modified:</div>
+        <div class="folder-prop-value">{folder_modified}</div>
+        
+        <div class="folder-prop-name">Size:</div>
+        <div class="folder-prop-value">{folder_size}</div>
+    </div>
+    
+    {folder_permissions_html}
+</div>
+"""
+
+# Template for folder permissions section
+FOLDER_PERMISSIONS_TEMPLATE = """
+<div class="folder-permission-list">
+    <h4>Folder Permissions</h4>
+    <ul>
+        {permissions_items}
+    </ul>
+</div>
+"""
+
+# Template for each permission item
+PERMISSION_ITEM_TEMPLATE = """
+<li>{user} {inherited}</li>
+"""
