@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 
 from parsers.base_parser import BaseParser, FileParserRegistry
+from utils.error_utils import safe_parser
 
 # Create a concrete implementation of BaseParser for testing
 class TestParser(BaseParser):
@@ -15,6 +16,7 @@ class TestParser(BaseParser):
             file_extensions=file_extensions or [".test"]
         )
     
+    @safe_parser(default_return={"test_value": True})
     def parse(self, file_path):
         # Simple implementation for testing
         result = self.default_values.copy()
