@@ -18,11 +18,14 @@ class TestParser(BaseParser):
     
     @safe_parser(default_return={"test_value": True})
     def parse(self, file_path):
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        
         # Simple implementation for testing
         result = self.default_values.copy()
-        result["filename"] = Path(file_path).name
+        result["filename"] = path.name
         return result
-
 
 class TestBaseParser(unittest.TestCase):
     

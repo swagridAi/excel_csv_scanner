@@ -167,7 +167,7 @@ class CSVParser(BaseParser):
     
     @safe_operation(operation_name="analyzing CSV structure")
     def _analyze_structure(self, file_path: Path, encoding: str, 
-                          delimiter: str, sample_rows: int = 10) -> Optional[Dict[str, Any]]:
+                        delimiter: str, sample_rows: int = 10) -> Optional[Dict[str, Any]]:
         """
         Analyze the structure of a CSV file.
         
@@ -181,9 +181,15 @@ class CSVParser(BaseParser):
             Dictionary with structure information or None if analysis fails
         """
         try:
+            # Check for quotes in raw file content FIRST (before pandas removes them)
+            has_quotes = False
+            with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                sample_content = f.read(4096)  # Read a sample
+                has_quotes = '"' in sample_content or "'" in sample_content
+
             # Try to read the CSV with pandas for structure analysis
             df = pd.read_csv(file_path, encoding=encoding, delimiter=delimiter, 
-                             nrows=sample_rows, low_memory=True)
+                            nrows=sample_rows, low_memory=True)
             
             # Check for header presence
             has_header = True  # Assume header is present by default
@@ -200,10 +206,6 @@ class CSVParser(BaseParser):
             empty_values_count = df.isna().sum().sum()
             has_empty_values = empty_values_count > 0
             
-            # Check for quotation characters
-            sample_text = '\n'.join(df.astype(str).values.flatten()[:100])
-            has_quotes = '"' in sample_text or "'" in sample_text
-            
             return {
                 "has_header": has_header,
                 "column_types": column_types,
@@ -215,7 +217,7 @@ class CSVParser(BaseParser):
         except Exception as e:
             self.logger.debug(f"Structure analysis failed: {str(e)}")
             return None
-    
+
     @safe_operation(operation_name="extracting user information from CSV")
     def _extract_user_info(self, file_path: Path, encoding: str, delimiter: str) -> Optional[Dict[str, Any]]:
         """
